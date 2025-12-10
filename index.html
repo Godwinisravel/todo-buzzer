@@ -5,15 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>My Todo & Buzzer</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- PWA manifest -->
-  <link rel="manifest" href="manifest.json" />
+  <link rel="manifest" href="./manifest.json" />
   <meta name="theme-color" content="#000000">
 </head>
 <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
   <div class="bg-white w-full max-w-md rounded-2xl shadow-lg p-4">
     <h1 class="text-xl font-bold mb-2">✅ My Todo List</h1>
 
-    <!-- Add Task Row -->
     <div class="flex flex-wrap gap-2 mb-3">
       <input id="taskInput" class="flex-1 border p-2 rounded min-w-[120px]" placeholder="Enter task..." />
       <input id="timeInput" type="time" class="border p-2 rounded" />
@@ -24,78 +22,66 @@
       <button onclick="addTask()" class="bg-black text-white px-3 py-2 rounded text-sm">Add</button>
     </div>
 
-    <!-- Task List -->
     <ul id="taskList" class="space-y-2 max-h-64 overflow-y-auto"></ul>
 
-    <!-- Button to enable notifications -->
     <button onclick="requestPermission()" class="mt-4 w-full bg-blue-600 text-white p-2 rounded">
       Enable Phone Alerts
     </button>
 
-    <!-- Progress Chart -->
+    <label class="mt-2 flex items-center gap-2 text-xs text-gray-700">
+      <input id="keepScreenOn" type="checkbox" />
+      Keep screen on while app is open
+    </label>
+
     <h2 class="text-lg font-semibold mt-4 mb-1">📊 Today’s Progress</h2>
     <canvas id="progressChart" class="w-full h-40"></canvas>
   </div>
 
-  <!-- Buzzer sound -->
-  <audio id="buzzer" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+  <div id="alarmOverlay" class="fixed inset-0 bg-black/80 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-2xl p-6 max-w-sm w-[90%] text-center animate-bounce">
+      <div class="text-5xl mb-4">⏰</div>
+      <h2 class="text-xl font-bold mb-2">Alarm!</h2>
+      <p id="alarmText" class="mb-4 text-gray-700"></p>
+      <button id="stopAlarmBtn" class="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold w-full">
+        Stop Alarm
+      </button>
+    </div>
+  </div>
 
-  <!-- Chart.js -->
+  <audio id="buzzer" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <script>
     const taskList = document.getElementById("taskList");
     const buzzer = document.getElementById("buzzer");
+    const alarmOverlay = document.getElementById("alarmOverlay");
+    const alarmText = document.getElementById("alarmText");
+    const stopAlarmBtn = document.getElementById("stopAlarmBtn");
+    const keepScreenOnCheckbox = document.getElementById("keepScreenOn");
 
     let tasks = JSON.parse(localStorage.getItem("tasks")) || [];
     let progressChart = null;
+    let wakeLock = null;
+    let alarmTimeout = null;
 
     function saveTasks() {
       localStorage.setItem("tasks", JSON.stringify(tasks));
     }
 
-    function normalizeTasks() {
-      // Add missing fields for older saved tasks
-      tasks = tasks.map(t => ({
-        text: t.text,
-        time: t.time,
-        repeatDaily: t.repeatDaily || false,
-        completed: t.completed || false,
-        disabled: t.disabled || false,
-        lastTriggeredDate: t.lastTriggeredDate || null,
-      }));
-    }
-
     function renderTasks() {
-      normalizeTasks();
       taskList.innerHTML = "";
       tasks.forEach((task, index) => {
         const li = document.createElement("li");
         li.className = "flex justify-between items-center border p-2 rounded";
-
         li.innerHTML = `
-          <div class="flex flex-col">
-            <p class="font-medium ${task.completed ? 'line-through text-gray-400' : ''}">
-              ${task.text}
-            </p>
-            <p class="text-xs text-gray-500">
-              Alarm: ${task.time} 
-              ${task.repeatDaily ? '• Repeats Daily' : ''}
-              ${task.disabled ? '• (Done)' : ''}
-            </p>
+          <div>
+            <p class="font-medium">${task.text}</p>
+            <p class="text-xs text-gray-500">Alarm: ${task.time} ${task.repeatDaily ? "• Daily" : ""}</p>
           </div>
-          <div class="flex items-center gap-2">
-            <label class="flex items-center gap-1 text-xs">
-              <input type="checkbox" ${task.completed ? "checked" : ""} 
-                     onchange="toggleComplete(${index}, this.checked)" />
-              Done
-            </label>
-            <button onclick="deleteTask(${index})" class="text-red-600 text-lg leading-none">✖</button>
-          </div>
+          <button onclick="deleteTask(${index})" class="text-red-600 text-lg">✖</button>
         `;
         taskList.appendChild(li);
       });
-
       updateChart();
     }
 
@@ -103,147 +89,81 @@
       const text = document.getElementById("taskInput").value.trim();
       const time = document.getElementById("timeInput").value;
       const repeatDaily = document.getElementById("repeatInput").checked;
+      if (!text || !time) return alert("Enter task and time");
 
-      if (!text || !time) {
-        alert("Enter task and time");
-        return;
-      }
-
-      const task = { 
-        text, 
-        time, 
-        repeatDaily, 
-        completed: false, 
-        disabled: false,
-        lastTriggeredDate: null 
-      };
-      tasks.push(task);
+      tasks.push({ text, time, repeatDaily });
       saveTasks();
       renderTasks();
-
       document.getElementById("taskInput").value = "";
       document.getElementById("repeatInput").checked = false;
     }
 
-    function deleteTask(index) {
-      tasks.splice(index, 1);
-      saveTasks();
-      renderTasks();
-    }
-
-    function toggleComplete(index, isChecked) {
-      tasks[index].completed = isChecked;
-      // Optionally disable non-repeating tasks after completion:
-      if (!tasks[index].repeatDaily && isChecked) {
-        tasks[index].disabled = true;
-      }
+    function deleteTask(i) {
+      tasks.splice(i, 1);
       saveTasks();
       renderTasks();
     }
 
     function requestPermission() {
       if ("Notification" in window) {
-        Notification.requestPermission().then(result => {
-          if (result === "granted") {
-            alert("Notifications enabled! Make sure your browser can show notifications on your phone.");
-          } else {
-            alert("Notifications not granted. You can still use the buzzer.");
-          }
-        });
-      } else {
-        alert("Notifications are not supported on this device/browser.");
+        Notification.requestPermission();
       }
     }
+
+    function showAlarm(text) {
+      alarmText.textContent = text;
+      alarmOverlay.classList.remove("hidden");
+      alarmOverlay.classList.add("flex");
+      if (navigator.vibrate) navigator.vibrate([300,200,300]);
+      alarmTimeout = setTimeout(stopAlarm, 60000);
+    }
+
+    function stopAlarm() {
+      alarmOverlay.classList.add("hidden");
+      alarmOverlay.classList.remove("flex");
+      if (alarmTimeout) clearTimeout(alarmTimeout);
+      buzzer.pause();
+      buzzer.currentTime = 0;
+    }
+
+    stopAlarmBtn.addEventListener("click", stopAlarm);
 
     function checkAlarms() {
       const now = new Date();
-      const currentTime = now.toTimeString().slice(0, 5); // HH:MM
-      const today = now.toISOString().slice(0, 10); // YYYY-MM-DD
-
-      let changed = false;
-
-      tasks.forEach((task) => {
-        if (task.disabled) return; // ignore disabled tasks
-        if (!task.time) return;
-
+      const currentTime = now.toTimeString().slice(0,5);
+      tasks.forEach(task => {
         if (task.time === currentTime) {
-          if (task.lastTriggeredDate === today) {
-            return; // already triggered today
-          }
-
-          // Trigger alarm
-          try {
-            buzzer.currentTime = 0;
-            buzzer.play();
-          } catch (e) {
-            // Some browsers require user interaction before audio; ignore error
-          }
-
-          if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("Todo Reminder", { body: task.text });
-          }
-
-          task.lastTriggeredDate = today;
-          changed = true;
-
-          // If not daily, disable after one trigger
-          if (!task.repeatDaily) {
-            task.disabled = true;
-          }
+          buzzer.play();
+          showAlarm(task.text);
         }
       });
-
-      if (changed) {
-        saveTasks();
-        renderTasks();
-      }
     }
 
     function updateChart() {
-      const activeTasks = tasks.filter(t => !t.disabled);
-      const completed = activeTasks.filter(t => t.completed).length;
-      const pending = activeTasks.length - completed;
-
+      const completed = 0;
+      const pending = tasks.length;
       const ctx = document.getElementById("progressChart").getContext("2d");
-
-      if (progressChart) {
-        progressChart.destroy();
-      }
-
+      if (progressChart) progressChart.destroy();
       progressChart = new Chart(ctx, {
         type: "bar",
         data: {
           labels: ["Completed", "Pending"],
-          datasets: [{
-            label: "Tasks",
-            data: [completed, pending],
-          }]
+          datasets: [{ data: [completed, pending] }]
         },
         options: {
           responsive: true,
-          plugins: {
-            legend: { display: false }
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              ticks: { precision: 0 }
-            }
-          }
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
         }
       });
     }
 
-    // PWA: register service worker
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker
-          .register("sw.js")
-          .catch((err) => console.log("SW registration failed:", err));
+        navigator.serviceWorker.register("sw.js");
       });
     }
 
-    // Start
     setInterval(checkAlarms, 1000);
     renderTasks();
   </script>
